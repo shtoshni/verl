@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict
 
-import torch
 from openai.types.chat.chat_completion import ChatCompletion
-from tensordict import TensorDict
 
 from verl.protocol import DataProto
 from verl.workers.rollout.async_server import ChatCompletionScheduler
@@ -87,49 +85,3 @@ class NaiveChatCompletionScheduler(ChatCompletionScheduler):
         print("[NaiveChatCompletionScheduler] generate_sequences done")
 
         return self._postprocess(batch, batch_conversations, kwargs["n"])
-
-    def _postprocess(self, batch: DataProto, batch_conversations: List[List[List[Dict[str, str]]]], n: int) -> DataProto:
-        # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
-        # prompts: left pad
-        # responses: right pad
-        # input_ids: prompt + response
-        # attention_mask: [0,0,0,0,1,1,1,1, | 1,1,1,0,0,0,0,0]
-        # position_ids:   [0,0,0,0,0,1,2,3, | 4,5,6,7,8,9,10,11]
-
-        # prompts: [prompt] from input dataset
-        prompts = [self.tokenizer.apply_chat_template(prompt, add_generation_prompt=True, tokenize=False) for prompt in batch.non_tensor_batch["raw_prompt"]]
-
-        # flatten batch_conversations if n > 1
-        assert len(batch_conversations) == len(prompts)
-        batch_conversations = [conversation for conversations in batch_conversations for conversation in conversations]
-        assert len(batch_conversations) == len(prompts) * n
-
-        # sequences: [prompt + response]
-        sequences = [self.tokenizer.apply_chat_template(conversation, add_generation_prompt=False, tokenize=False) for conversation in batch_conversations]
-
-        # responses: [response]
-        # TODO: mask out tools calling tokens?
-        responses = [sequence[len(prompts[i // n]) :] for i, sequence in enumerate(sequences)]
-
-        prompts = self.tokenizer(prompts, return_tensors="pt", padding="longest", padding_side="left")
-        responses = self.tokenizer(responses, return_tensors="pt", padding="longest", padding_side="right")
-        if n > 1:
-            prompts["input_ids"] = prompts["input_ids"].repeat_interleave(n, dim=0)
-            prompts["attention_mask"] = prompts["attention_mask"].repeat_interleave(n, dim=0)
-
-        input_ids = torch.cat([prompts["input_ids"], responses["input_ids"]], dim=1)
-        attention_mask = torch.cat([prompts["attention_mask"], responses["attention_mask"]], dim=1)
-        position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
-
-        batch = TensorDict(
-            {
-                "prompts": prompts["input_ids"],
-                "responses": responses["input_ids"],
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "position_ids": position_ids,
-            },
-            batch_size=len(input_ids),
-        )
-
-        return DataProto(batch=batch)

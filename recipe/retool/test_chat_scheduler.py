@@ -29,6 +29,7 @@ from starlette.responses import JSONResponse
 
 from tests.workers.rollout.async_rollout_utils import init_async_rollout_manager
 from verl.protocol import DataProto
+from verl.utils import hf_tokenizer
 
 
 def _get_free_port():
@@ -152,3 +153,23 @@ if __name__ == "__main__":
 
     result = async_rollout_manager.generate_sequences(prompts=prompts)
     assert len(result) == len(dataset)
+
+    # Check max turns that sandbox is called
+    turns = result.meta_info["turns"]
+    print(f"turns: {turns}")
+    assert np.max(turns) > 2, f"max turns: {np.max(turns)}"
+
+    # Check loss_mask
+    tokenizer = hf_tokenizer(config.actor_rollout_ref.model.path)
+    responses = result.batch["responses"]
+    loss_mask = result.batch["loss_mask"]
+    assert responses.size() == loss_mask.size(), f"{responses.size()} != {loss_mask.size()}"
+
+    # Decode responses with loss_mask
+    for i in range(len(responses)):
+        valid_tokens = responses[i][loss_mask[i].bool()]
+        response_str = tokenizer.decode(valid_tokens)
+        assert "<tool_response>" not in response_str, f"found <tool_response> in response: {response_str}"
+        assert "</tool_response>" not in response_str, f"found </tool_response> in response: {response_str}"
+
+        print(f"response: {response_str}")

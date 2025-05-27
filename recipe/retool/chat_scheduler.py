@@ -13,7 +13,7 @@
 # limitations under the License.
 import asyncio
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import aiohttp
 from openai.types.chat.chat_completion import ChatCompletion
@@ -148,8 +148,5 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
         await asyncio.gather(*tasks)
         print("[ToolChatCompletionScheduler] generate_sequences done")
 
-        return self._postprocess(batch, batch_conversations)
-
-    def _postprocess(self, batch: DataProto, batch_conversations: List[List[Dict[str, str]]]) -> DataProto:
-        # TODO: implement loss mask
-        return batch_conversations
+        batch_conversations = [[conversations] for conversations in batch_conversations]
+        return self._postprocess(batch, batch_conversations, n=1)

@@ -25,13 +25,16 @@ from uuid import uuid4
 
 import aiohttp
 import fastapi
+import numpy as np
 import ray
+import torch
 import uvicorn
 from cachetools import LRUCache
 from omegaconf import DictConfig
 from openai import AsyncOpenAI
 from openai.types.chat.chat_completion import ChatCompletion
 from starlette.requests import Request
+from tensordict import TensorDict
 
 from verl.protocol import DataProto
 from verl.single_controller.ray.base import RayWorkerGroup
@@ -213,6 +216,94 @@ class ChatCompletionScheduler:
 
     async def generate_sequences(self, prompts: DataProto, **sampling_params) -> DataProto:
         raise NotImplementedError
+
+    def _postprocess(self, batch: DataProto, batch_conversations: List[List[List[Dict[str, str]]]], n: int) -> DataProto:
+        # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
+        # prompts: left pad
+        # responses: right pad
+        # input_ids: prompt + response
+        # attention_mask: [0,0,0,0,1,1,1,1, | 1,1,1,0,0,0,0,0]
+        # position_ids:   [0,0,0,0,0,1,2,3, | 4,5,6,7,8,9,10,11]
+
+        # prompts: [prompt] from input dataset
+        prompts = [self.tokenizer.apply_chat_template(prompt, add_generation_prompt=True, tokenize=False) for prompt in batch.non_tensor_batch["raw_prompt"]]
+
+        # flatten batch_conversations if n > 1
+        assert len(batch_conversations) == len(prompts)
+        batch_conversations = [conversation for conversations in batch_conversations for conversation in conversations]
+        assert len(batch_conversations) == len(prompts) * n
+
+        # sequences: [prompt + response]
+        sequences = [self.tokenizer.apply_chat_template(conversation, add_generation_prompt=False, tokenize=False) for conversation in batch_conversations]
+
+        # responses: [response]
+        responses = [sequence[len(prompts[i // n]) :] for i, sequence in enumerate(sequences)]
+
+        prompts = self.tokenizer(prompts, return_tensors="pt", padding="longest", padding_side="left")
+        responses = self.tokenizer(responses, return_tensors="pt", padding="longest", padding_side="right")
+        if n > 1:
+            prompts["input_ids"] = prompts["input_ids"].repeat_interleave(n, dim=0)
+            prompts["attention_mask"] = prompts["attention_mask"].repeat_interleave(n, dim=0)
+
+        # loss_mask: response mask with tools calling masked out
+        loss_mask = self._mask_out_tools_calling_tokens(batch.non_tensor_batch["raw_prompt"].repeat(n, axis=0), batch_conversations, responses["input_ids"], responses["attention_mask"])
+
+        input_ids = torch.cat([prompts["input_ids"], responses["input_ids"]], dim=1)
+        attention_mask = torch.cat([prompts["attention_mask"], responses["attention_mask"]], dim=1)
+        position_ids = (attention_mask.cumsum(dim=1) - 1) * attention_mask
+
+        batch = TensorDict(
+            {
+                "prompts": prompts["input_ids"],
+                "responses": responses["input_ids"],
+                "loss_mask": loss_mask,
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+                "position_ids": position_ids,
+            },
+            batch_size=len(input_ids),
+        )
+
+        turns = np.array([len(conversation) for conversation in batch_conversations], dtype=np.int32)
+        return DataProto(batch=batch, meta_info={"turns": turns})
+
+    def _mask_out_tools_calling_tokens(
+        self,
+        raw_prompts: List[List[Dict[str, str]]],
+        batch_conversations: List[List[Dict[str, str]]],
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Mask out tools calling tokens in the responses.
+
+        Args:
+            raw_prompts: [prompt] from input dataset
+            batch_conversations: [prompt + response]
+            input_ids: responses tokens
+            attention_mask: responses attention mask
+
+        Returns:
+            mask: (batch_size, response_length)
+        """
+        batch_size = input_ids.size(0)
+        assert len(raw_prompts) == batch_size, f"{len(raw_prompts)} != {batch_size}"
+        assert len(batch_conversations) == batch_size, f"{len(batch_conversations)} != {batch_size}"
+
+        loss_mask = attention_mask.clone()
+        for i in range(batch_size):
+            responses = batch_conversations[i][len(raw_prompts[i]) :]
+            assert len(responses) > 0, f"responses is empty: {responses}"
+            assert responses[-1]["role"] != "tool", f"last turn should not be tool calling: {responses}"
+
+            # Each turn should be: [BOS]...[EOS]
+            eos_indices = input_ids[i].eq(self.tokenizer.eos_token_id).nonzero().squeeze(0)[: len(responses)]
+            for j in range(len(responses)):
+                if responses[j]["role"] == "tool":
+                    bos = eos_indices[j - 1] + 1 if j > 0 else 0
+                    eos = eos_indices[j]
+                    loss_mask[i, bos : eos + 1] = 0
+
+        return loss_mask
 
 
 class AsyncLLMServerManager:
