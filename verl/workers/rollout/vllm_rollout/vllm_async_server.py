@@ -146,8 +146,6 @@ class AsyncvLLMServer(AsyncServerBase):
 
         tensor_parallel_size = config.get("tensor_model_parallel_size", 1)
         max_num_batched_tokens = config.get("max_num_batched_tokens", 8192)
-        max_model_len = config.max_model_len if config.max_model_len else config.prompt_length + config.response_length
-        max_model_len = int(max_model_len)
 
         # Override default generation config from hugging face model config,
         # user can still override them by passing kwargs in each request.
@@ -173,7 +171,6 @@ class AsyncvLLMServer(AsyncServerBase):
             disable_custom_all_reduce=True,
             disable_mm_preprocessor_cache=True,
             skip_tokenizer_init=False,
-            max_model_len=max_model_len,
             load_format="auto",
             disable_log_stats=config.disable_log_stats,
             max_num_batched_tokens=max_num_batched_tokens,
