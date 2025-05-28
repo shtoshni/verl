@@ -12,14 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import asyncio
+import concurrent.futures
+import logging
+import os
 import re
 from typing import Any, Dict
 
-import aiohttp
 from openai.types.chat.chat_completion import ChatCompletion
 
 from verl.protocol import DataProto
+from verl.utils.reward_score.sandbox_fusion.utils import _process_single_case
 from verl.workers.rollout.async_server import ChatCompletionScheduler
+
+logger = logging.getLogger(__name__)
 
 ci_user_prompt_template_v3 = """Solve the following problem step by step. You now have the ability to selectively write executable Python code to enhance your reasoning process. The Python code will be executed by an external sandbox, and the output (wrapped in `<interpreter>output_str</interpreter>`) can be returned to aid your reasoning and help you arrive at the final answer. The Python code should be complete scripts, including necessary imports. 
 Each code snippet is wrapped with `<code>\n```python\ncode snippet\n```\n</code>`.
@@ -38,22 +43,32 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
     described in ReTool paper: https://arxiv.org/pdf/2504.11536
     """
 
-    def __init__(self, config, model_path, server_addresses, sandbox_url, user_prompt_template=ci_user_prompt_template_v3, **kwargs):
+    def __init__(self, config, model_path, server_addresses, sandbox_fusion_url, user_prompt_template=ci_user_prompt_template_v3, **kwargs):
         super().__init__(config, model_path, server_addresses, **kwargs)
-        self.sandbox_url = sandbox_url
         self.user_prompt_template = user_prompt_template
+        self.answer_pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+        self.code_pattern = re.compile(r"<code>\s*```python(.*?)```\s*</code>", re.DOTALL)
+
+        self.sandbox_fusion_url = sandbox_fusion_url
+        self.default_timeout = 10
+        # TODO: support asyncio executor
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max(32, os.cpu_count() * 5))
 
     async def sandbox_code_execution(self, code: str) -> Dict[str, Any]:
-        """Execute python code in sandbox."""
-        try:
-            session = aiohttp.ClientSession()
-            async with session.post(
-                url=self.sandbox_url,
-                json={"code": code},
-            ) as resp:
-                return await resp.json()
-        finally:
-            await session.close()
+        loop = asyncio.get_running_loop()
+        result_status, metadata = await loop.run_in_executor(
+            self.executor,
+            _process_single_case,
+            0,  # case_index,
+            None,  # stdin_data,
+            None,  # expected_output,
+            self.sandbox_fusion_url,  # sandbox_fusion_url
+            code,  # generation
+            self.default_timeout,  # timeout
+            "python",  # language
+        )
+
+        return metadata
 
     async def generate_sequences(self, batch: DataProto, **sampling_params) -> DataProto:
         kwargs = dict(
@@ -72,7 +87,7 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
             kwargs["temperature"] = 0
 
         kwargs.update(sampling_params)
-        print(f"[ToolChatCompletionScheduler] generate_sequences sampling params: {kwargs}")
+        logger.info(f"[ToolChatCompletionScheduler] generate_sequences sampling params: {kwargs}")
 
         async def callback(completions: ChatCompletion, info: Dict[str, Any], exception: Exception):
             assert exception is None, f"exception: {exception}"
@@ -86,27 +101,31 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
 
             # STEP 0: check if we reach max tokens
             if finish_reason == "length":
-                print(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] Reach max tokens, done!")
+                logger.debug(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] Reach max tokens, done!")
                 return
 
             # STEP 1: check if we got answer
-            matches = re.findall(r"<answer>(.*?)</answer>", content, re.DOTALL)
+            matches = self.answer_pattern.findall(content)
             if matches:
-                print(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] Got answer: {matches[0]}, done!")
+                logger.debug(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] Got answer: {matches[0]}, done!")
                 return
 
             # STEP 2: check if we got code block
-            matches = re.findall(r"<code>\s*```python(.*?)```\s*</code>", content, re.DOTALL)
+            matches = self.code_pattern.findall(content)
             if not matches:
-                print(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] No code block found, done!")
+                logger.debug(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] No code block found, done!")
                 return
 
             # STEP 3: execute code block in sandbox
             code = matches[0].strip()
-            result = await self.sandbox_code_execution(code)
-            stdout, stderr = result["stdout"], result["stderr"]
+            metadata = await self.sandbox_code_execution(code)
+            if metadata["run_status"] != "Finished":
+                logger.warning(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] Code block execution failed: {metadata}, done!")
+                return
+
+            stdout, stderr = metadata["stdout"], metadata["stderr"]
             batch_conversations[batch_index].append({"role": "tool", "content": f"<interpreter>{stdout}{stderr}</interpreter>"})
-            print(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] Code block executed, continue...")
+            logger.debug(f"[id={completions.id},turn={turn},finish_reason={finish_reason}] Code block executed, continue...")
 
             # STEP 4: resubmit chat completions with code block output
             extra_headers = {"x-request-id": completions.id}
@@ -146,7 +165,7 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
             )
 
         await asyncio.gather(*tasks)
-        print("[ToolChatCompletionScheduler] generate_sequences done")
+        logger.info("[ToolChatCompletionScheduler] generate_sequences done")
 
         batch_conversations = [[conversations] for conversations in batch_conversations]
         return self._postprocess(batch, batch_conversations, n=1)

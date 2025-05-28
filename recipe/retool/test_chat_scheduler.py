@@ -66,7 +66,16 @@ class Sandbox:
 
             stdout, stderr = await process.communicate()
 
-            return JSONResponse(content={"stdout": stdout.decode(), "stderr": stderr.decode(), "returncode": process.returncode})
+            response = {
+                "status": "Success" if process.returncode == 0 else "Failed",
+                "run_result": {
+                    "status": "Finished",
+                    "stdout": stdout.decode(),
+                    "stderr": stderr.decode(),
+                    "return_code": process.returncode,
+                },
+            }
+            return JSONResponse(content=response)
         finally:
             try:
                 os.unlink(temp_file)
@@ -142,9 +151,10 @@ if __name__ == "__main__":
     # Init sandbox and async rollout manager
     sandbox = Sandbox.options(num_cpus=1).remote()
     sandbox_address = ray.get(sandbox.get_server_address.remote())
+    sandbox_fusion_url = f"http://{sandbox_address}/run_code"
     async_rollout_manager = init_async_rollout_manager(
         config,
-        scheduler_kwargs={"sandbox_url": f"http://{sandbox_address}/run_code", "user_prompt_template": user_prompt_template},
+        scheduler_kwargs={"sandbox_fusion_url": sandbox_fusion_url, "user_prompt_template": user_prompt_template},
     )
 
     # Build dataset
@@ -171,5 +181,6 @@ if __name__ == "__main__":
         response_str = tokenizer.decode(valid_tokens)
         assert "<tool_response>" not in response_str, f"found <tool_response> in response: {response_str}"
         assert "</tool_response>" not in response_str, f"found </tool_response> in response: {response_str}"
-
         print(f"response: {response_str}")
+
+    print("Test passed!")
