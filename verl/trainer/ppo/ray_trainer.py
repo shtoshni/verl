@@ -639,6 +639,7 @@ class RayPPOTrainer:
         sample_inputs = []
         sample_outputs = []
         sample_scores = []
+        sample_turns = []
 
         for test_data in self.val_dataloader:
             test_batch = DataProto.from_single_dict(test_data)
@@ -679,16 +680,15 @@ class RayPPOTrainer:
             print(f"test_gen_batch meta info: {test_gen_batch.meta_info}")
 
             # pad to be divisible by dp_size
-            test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
             if not self.async_rollout_mode:
+                test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
                 test_output_gen_batch_padded = self.actor_rollout_wg.generate_sequences(test_gen_batch_padded)
+                test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             else:
                 self.async_rollout_manager.wake_up()
-                test_output_gen_batch_padded = self.async_rollout_manager.generate_sequences(test_gen_batch_padded)
+                test_output_gen_batch = self.async_rollout_manager.generate_sequences(test_gen_batch)
                 self.async_rollout_manager.sleep()
 
-            # unpad
-            test_output_gen_batch = unpad_dataproto(test_output_gen_batch_padded, pad_size=pad_size)
             print("validation generation end")
 
             # Store generated outputs
@@ -708,6 +708,10 @@ class RayPPOTrainer:
             if "reward_extra_info" in result:
                 for key, lst in result["reward_extra_info"].items():
                     reward_extra_infos_dict[key].extend(lst)
+
+            # collect num_turns of each prompt
+            if "__num_turns__" in test_batch.non_tensor_batch:
+                sample_turns.append(test_batch.non_tensor_batch["__num_turns__"])
 
             data_source_lst.append(test_batch.non_tensor_batch.get("data_source", ["unknown"] * reward_tensor.shape[0]))
 
@@ -742,6 +746,12 @@ class RayPPOTrainer:
                         metric_sec = "val-aux"
                     pfx = f"{metric_sec}/{data_source}/{var_name}/{metric_name}"
                     metric_dict[pfx] = metric_val
+
+        if len(sample_turns) > 0:
+            sample_turns = np.concatenate(sample_turns)
+            metric_dict["val-aux/num_turns/min"] = sample_turns.min()
+            metric_dict["val-aux/num_turns/max"] = sample_turns.max()
+            metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
 
         return metric_dict
 
@@ -824,7 +834,7 @@ class RayPPOTrainer:
         if self.config.actor_rollout_ref.rollout.mode == "async":
             self.async_rollout_mode = True
             self.async_rollout_manager = AsyncLLMServerManager(
-                config=self.config.actor_rollout_ref,
+                config=self.config,
                 worker_group=self.actor_rollout_wg,
             )
 

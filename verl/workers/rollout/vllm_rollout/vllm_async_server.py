@@ -122,14 +122,14 @@ class AsyncvLLMServer(AsyncServerBase):
     def __init__(self, config: DictConfig, vllm_dp_size: int, vllm_dp_rank: int, wg_prefix: str):
         """
         Args:
-            config: DictConfig, actor_rollout_ref config.
+            config: DictConfig.
             vllm_dp_size: int, vllm data parallel size.
             vllm_dp_rank: int, vllm data parallel rank.
             wg_prefix: str, worker group prefix, used to lookup actors.
         """
         super().__init__()
 
-        self.config = config
+        self.config = config.actor_rollout_ref
         self.vllm_dp_size = vllm_dp_size
         self.vllm_dp_rank = vllm_dp_rank
         self.wg_prefix = wg_prefix

@@ -118,12 +118,12 @@ class ChatCompletionScheduler:
     ):
         """
         Args:
-            config: DictConfig, rollout config.
+            config: DictConfig.
             model_path: str, model path.
             server_addresses: List[str], server addresses.
             max_cache_size: int, max cache size of request_id to address mapping.
         """
-        self.config = config
+        self.config = config.actor_rollout_ref.rollout
         self.model_name = "/".join(model_path.split("/")[-2:])
         local_path = copy_to_local(model_path)
         self.tokenizer = hf_tokenizer(local_path, trust_remote_code=True)
@@ -264,8 +264,8 @@ class ChatCompletionScheduler:
             batch_size=len(input_ids),
         )
 
-        turns = np.array([len(conversation) for conversation in batch_conversations], dtype=np.int32)
-        return DataProto(batch=batch, meta_info={"turns": turns})
+        num_turns = np.array([len(conversation) for conversation in batch_conversations], dtype=np.int32)
+        return DataProto(batch=batch, non_tensor_batch={"__num_turns__": num_turns})
 
     def _mask_out_tools_calling_tokens(
         self,
@@ -317,7 +317,8 @@ class AsyncLLMServerManager:
             worker_group: RayWorkerGroup, worker group of AsyncActorRolloutRefWorker.
             scheduler_kwargs: Dict[str, Any], kwargs for chat scheduler.
         """
-        self.config = config
+        self.full_config = config
+        self.config = config.actor_rollout_ref
         self.worker_group = worker_group
         self.scheduler_kwargs = scheduler_kwargs if scheduler_kwargs else {}
 
@@ -379,7 +380,7 @@ class AsyncLLMServerManager:
         module = importlib.import_module(module_path)
         scheduler_cls = getattr(module, class_name)
         self.chat_scheduler = scheduler_cls(
-            config=self.config.rollout,
+            config=self.full_config,
             model_path=self.config.model.path,
             server_addresses=self.server_addresses,
             **self.scheduler_kwargs,

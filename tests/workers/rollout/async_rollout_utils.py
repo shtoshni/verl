@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import os
 from typing import Any, Dict
 
 import ray
@@ -25,11 +24,6 @@ from verl.workers.rollout.async_server import AsyncLLMServerManager
 
 
 def init_async_rollout_manager(config: DictConfig, scheduler_kwargs: Dict[str, Any] = None) -> AsyncLLMServerManager:
-    # make openai client happy
-    os.environ["no_proxy"] = ""
-    os.environ["http_proxy"] = ""
-    os.environ["https_proxy"] = ""
-
     # =========================== 1. Create hybrid ActorRollout workers ===========================
     role_worker_mapping = {
         Role.ActorRollout: ray.remote(AsyncActorRolloutRefWorker),
@@ -61,7 +55,7 @@ def init_async_rollout_manager(config: DictConfig, scheduler_kwargs: Dict[str, A
 
     # =========================== 2. Create AsyncLLMServerManager  ===========================
     async_rollout_manager = AsyncLLMServerManager(
-        config=config.actor_rollout_ref,
+        config=config,
         worker_group=actor_rollout_wg,
         scheduler_kwargs=scheduler_kwargs,
     )

@@ -152,9 +152,10 @@ if __name__ == "__main__":
     sandbox = Sandbox.options(num_cpus=1).remote()
     sandbox_address = ray.get(sandbox.get_server_address.remote())
     sandbox_fusion_url = f"http://{sandbox_address}/run_code"
+    config.reward_model.sandbox_fusion.url = sandbox_fusion_url
     async_rollout_manager = init_async_rollout_manager(
         config,
-        scheduler_kwargs={"sandbox_fusion_url": sandbox_fusion_url, "user_prompt_template": user_prompt_template},
+        scheduler_kwargs={"user_prompt_template": user_prompt_template},
     )
 
     # Build dataset
@@ -165,9 +166,9 @@ if __name__ == "__main__":
     assert len(result) == len(dataset)
 
     # Check max turns that sandbox is called
-    turns = result.meta_info["turns"]
-    print(f"turns: {turns}")
-    assert np.max(turns) > 2, f"max turns: {np.max(turns)}"
+    num_turns = result.non_tensor_batch["__num_turns__"]
+    print(f"num_turns: {num_turns}")
+    assert np.max(num_turns) > 2, f"max turns: {np.max(num_turns)}"
 
     # Check loss_mask
     tokenizer = hf_tokenizer(config.actor_rollout_ref.model.path)
