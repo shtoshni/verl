@@ -234,6 +234,7 @@ def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_re
             response_mask=data.batch["response_mask"],
             gamma=gamma,
             lam=lam,
+            multi_turn=multi_turn,
         )
         data.batch["advantages"] = advantages
         data.batch["returns"] = returns
@@ -1121,6 +1122,7 @@ class RayPPOTrainer:
                             use_pf_ppo=self.config.algorithm.use_pf_ppo,
                             pf_ppo_reweight_method=self.config.algorithm.pf_ppo.reweight_method,
                             pf_ppo_weight_pow=self.config.algorithm.pf_ppo.weight_pow,
+                            multi_turn=self.config.actor_rollout_ref.rollout.multi_turn.enable or self.async_rollout_mode,
                         )
 
                     # update critic
