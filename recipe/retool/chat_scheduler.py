@@ -77,24 +77,28 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
     async def generate_sequences(self, batch: DataProto, **sampling_params) -> DataProto:
         kwargs = dict(
             n=self.config.n,
-            max_completion_tokens=self.config.response_length,
+            # Let server determine max completion tokens: min(max_model_len-len(input_ids), max_new_tokens)
+            # max_completion_tokens=self.config.response_length,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             include_stop_str_in_output=True,
             stop=["</answer>", "</code>"],
         )
 
-        do_sample = batch.meta_info.get("do_sample", True)
-        is_validate = batch.meta_info.get("validate", False)
-        if not do_sample or is_validate:
-            kwargs["n"] = 1
-            kwargs["temperature"] = 0
+        # override sampling params for validation
+        if batch.meta_info.get("validate", False):
+            kwargs["n"] = self.config.val_kwargs.n
+            kwargs["top_p"] = self.config.val_kwargs.top_p
+            kwargs["temperature"] = self.config.val_kwargs.temperature
 
         kwargs.update(sampling_params)
         print(f"[ToolChatCompletionScheduler] generate_sequences sampling params: {kwargs}")
 
         async def callback(completions: ChatCompletion, info: Dict[str, Any], exception: Exception):
-            assert exception is None, f"exception: {exception}"
+            if exception:
+                logger.error(f"[ToolChatCompletionScheduler] current turn: {info['turn']}, callback error: {exception}")
+                return
+
             batch_conversations, batch_index, turn = (
                 info["batch_conversations"],
                 info["batch_index"],

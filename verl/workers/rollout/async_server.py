@@ -245,8 +245,8 @@ class ChatCompletionScheduler:
             prompts["input_ids"] = prompts["input_ids"].repeat_interleave(n, dim=0)
             prompts["attention_mask"] = prompts["attention_mask"].repeat_interleave(n, dim=0)
 
-        # loss_mask: response mask with tools calling masked out
-        loss_mask = self._mask_out_tools_calling_tokens(batch.non_tensor_batch["raw_prompt"].repeat(n, axis=0), batch_conversations, responses["input_ids"], responses["attention_mask"])
+        # response_mask: response mask with tools calling masked out
+        response_mask = self._mask_out_tools_calling_tokens(batch.non_tensor_batch["raw_prompt"].repeat(n, axis=0), batch_conversations, responses["input_ids"], responses["attention_mask"])
 
         input_ids = torch.cat([prompts["input_ids"], responses["input_ids"]], dim=1)
         attention_mask = torch.cat([prompts["attention_mask"], responses["attention_mask"]], dim=1)
@@ -254,12 +254,12 @@ class ChatCompletionScheduler:
 
         batch = TensorDict(
             {
-                "prompts": prompts["input_ids"],
-                "responses": responses["input_ids"],
-                "loss_mask": loss_mask,
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "position_ids": position_ids,
+                "prompts": prompts["input_ids"],  # [bsz, prompt_length]
+                "responses": responses["input_ids"],  # [bsz, response_length]
+                "response_mask": response_mask,  # [bsz, response_length]
+                "input_ids": input_ids,  # [bsz, prompt_length + response_length]
+                "attention_mask": attention_mask,  # [bsz, prompt_length + response_length]
+                "position_ids": position_ids,  # [bsz, prompt_length + response_length]
             },
             batch_size=len(input_ids),
         )

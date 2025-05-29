@@ -152,7 +152,7 @@ class AsyncvLLMServer(AsyncServerBase):
         kwargs = dict(
             n=1,
             logprobs=0,
-            max_tokens=config.response_length,
+            max_new_tokens=config.response_length,
         )
         for k in config.keys():
             if hasattr(SamplingParams(), str(k)):

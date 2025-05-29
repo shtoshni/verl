@@ -97,6 +97,7 @@ def compute_gae_advantage_return(
         advantages_reversed = []
         gen_len = token_level_rewards.shape[-1]
 
+        # TODO: mask out observation tokens
         for t in reversed(range(gen_len)):
             nextvalues = values[:, t + 1] if t < gen_len - 1 else 0.0
             delta = token_level_rewards[:, t] + gamma * nextvalues - values[:, t]

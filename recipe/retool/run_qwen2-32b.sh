@@ -1,21 +1,26 @@
 set -x
 
+# ================= data/model/tool =================
 DATA_ROOT=
 
 dapo_math_17k=${DATA_ROOT}/dataset/BytedTsinghua-SIA/DAPO-Math-17k
 aime_2024=${DATA_ROOT}/dataset/Maxwell-Jia/AIME_2024
 model_path=${DATA_ROOT}/JoeYing/ReTool-Qwen-32B-SFT
 
-ARNOLD_WORKER_GPU=16
-ARNOLD_WORKER_NUM=8
-TP=4 # vllm
-SP=4 # train
-
 train_files="['$dapo_math_17k']"
 test_files="['$aime_2024']"
 
 chat_scheduler=recipe.retool.chat_scheduler.ToolChatCompletionScheduler
 sandbox_fusion_url="https://***.apigateway-cn-beijing.volceapi.com/run_code"
+
+# ================= perfomance =================
+ARNOLD_WORKER_GPU=16
+ARNOLD_WORKER_NUM=8
+
+TP=4 # vllm
+SP=4 # train
+
+offload=True
 
 ray job submit --address="http://127.0.0.1:8265" \
     --runtime-env=examples/ppo_trainer/runtime_env.yaml \
@@ -41,12 +46,12 @@ ray job submit --address="http://127.0.0.1:8265" \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \
     actor_rollout_ref.model.enable_gradient_checkpointing=True \
-    actor_rollout_ref.actor.ppo_mini_batch_size=128 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=256 \
     actor_rollout_ref.actor.use_dynamic_bsz=True \
     actor_rollout_ref.actor.ppo_max_token_len_per_gpu=24000 \
     actor_rollout_ref.actor.ulysses_sequence_parallel_size=$SP \
-    actor_rollout_ref.actor.fsdp_config.param_offload=False \
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
+    actor_rollout_ref.actor.fsdp_config.param_offload=${offload} \
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=${offload} \
     actor_rollout_ref.actor.use_kl_loss=False \
     actor_rollout_ref.rollout.tensor_model_parallel_size=$TP \
     actor_rollout_ref.rollout.name=vllm \
@@ -54,13 +59,15 @@ ray job submit --address="http://127.0.0.1:8265" \
     actor_rollout_ref.rollout.chat_scheduler=$chat_scheduler \
     actor_rollout_ref.rollout.gpu_memory_utilization=0.9 \
     actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=24000 \
+    actor_rollout_ref.rollout.val_kwargs.top_p=0.6 \
+    actor_rollout_ref.rollout.val_kwargs.temperature=1.0 \
     critic.optim.lr=1e-5 \
     critic.model.use_remove_padding=True \
     critic.model.path=$model_path \
     critic.model.enable_gradient_checkpointing=True \
     critic.ppo_max_token_len_per_gpu=98304 \
-    critic.model.fsdp_config.param_offload=False \
-    critic.model.fsdp_config.optimizer_offload=False \
+    critic.model.fsdp_config.param_offload=${offload} \
+    critic.model.fsdp_config.optimizer_offload=${offload} \
     algorithm.use_kl_in_reward=False \
     trainer.critic_warmup=0 \
     trainer.logger=['console','wandb'] \
