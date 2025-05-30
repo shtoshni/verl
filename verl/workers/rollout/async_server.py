@@ -233,6 +233,9 @@ class ChatCompletionScheduler:
         batch_conversations = [conversation for conversations in batch_conversations for conversation in conversations]
         assert len(batch_conversations) == len(prompts) * n
 
+        # drop last turn if it's tool calling
+        batch_conversations = [conversation[:-1] if conversation[-1]["role"] == "tool" else conversation for conversation in batch_conversations]
+
         # sequences: [prompt + response]
         sequences = [self.tokenizer.apply_chat_template(conversation, add_generation_prompt=False, tokenize=False) for conversation in batch_conversations]
 

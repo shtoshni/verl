@@ -170,15 +170,15 @@ if __name__ == "__main__":
     print(f"num_turns: {num_turns}")
     assert np.max(num_turns) > 2, f"max turns: {np.max(num_turns)}"
 
-    # Check loss_mask
+    # Check response_mask
     tokenizer = hf_tokenizer(config.actor_rollout_ref.model.path)
     responses = result.batch["responses"]
-    loss_mask = result.batch["loss_mask"]
-    assert responses.size() == loss_mask.size(), f"{responses.size()} != {loss_mask.size()}"
+    response_mask = result.batch["response_mask"]
+    assert responses.size() == response_mask.size(), f"{responses.size()} != {response_mask.size()}"
 
-    # Decode responses with loss_mask
+    # Decode responses with response_mask
     for i in range(len(responses)):
-        valid_tokens = responses[i][loss_mask[i].bool()]
+        valid_tokens = responses[i][response_mask[i].bool()]
         response_str = tokenizer.decode(valid_tokens)
         assert "<tool_response>" not in response_str, f"found <tool_response> in response: {response_str}"
         assert "</tool_response>" not in response_str, f"found </tool_response> in response: {response_str}"
