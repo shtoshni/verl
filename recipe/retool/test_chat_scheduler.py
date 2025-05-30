@@ -147,6 +147,7 @@ if __name__ == "__main__":
     config.actor_rollout_ref.rollout.chat_scheduler = "recipe.retool.chat_scheduler.ToolChatCompletionScheduler"
     config.actor_rollout_ref.rollout.prompt_length = 8192
     config.actor_rollout_ref.rollout.response_length = 8192
+    config.actor_rollout_ref.rollout.n = 4
 
     # Init sandbox and async rollout manager
     sandbox = Sandbox.options(num_cpus=1).remote()
@@ -163,7 +164,7 @@ if __name__ == "__main__":
     prompts = DataProto(non_tensor_batch={"raw_prompt": np.array([[{"role": "user", "content": problem}] for problem in dataset["Problem"]])})
 
     result = async_rollout_manager.generate_sequences(prompts=prompts)
-    assert len(result) == len(dataset)
+    assert len(result) == len(dataset) * config.actor_rollout_ref.rollout.n
 
     # Check max turns that sandbox is called
     num_turns = result.non_tensor_batch["__num_turns__"]

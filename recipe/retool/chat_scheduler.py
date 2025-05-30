@@ -76,7 +76,6 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
 
     async def generate_sequences(self, batch: DataProto, **sampling_params) -> DataProto:
         kwargs = dict(
-            n=self.config.n,
             # Let server determine max completion tokens: min(max_model_len-len(input_ids), max_new_tokens)
             # max_completion_tokens=self.config.response_length,
             temperature=self.config.temperature,
@@ -87,7 +86,6 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
 
         # override sampling params for validation
         if batch.meta_info.get("validate", False):
-            kwargs["n"] = self.config.val_kwargs.n
             kwargs["top_p"] = self.config.val_kwargs.top_p
             kwargs["temperature"] = self.config.val_kwargs.temperature
 
@@ -155,8 +153,10 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
                 **kwargs,
             )
 
-        tasks, batch_conversations = [], [None] * len(batch)
-        for batch_index, conversation in enumerate(batch.non_tensor_batch["raw_prompt"]):
+        # For multi-turn rollout, we choose to repeat raw_prompt n times and process each prompt independently.
+        n = self.config.val_kwargs.n if batch.meta_info.get("validate", False) else self.config.n
+        tasks, batch_conversations = [], [None] * len(batch) * n
+        for batch_index, conversation in enumerate(batch.non_tensor_batch["raw_prompt"].repeat(n, axis=0)):
             # raw_prompt: [{"role": "user", "content": ""}, ["role": "assistant", "content"], ...]
             conversation[0]["content"] = self.user_prompt_template.replace("{question}", conversation[0]["content"])
             batch_conversations[batch_index] = conversation.tolist()
@@ -180,8 +180,7 @@ class ToolChatCompletionScheduler(ChatCompletionScheduler):
         await asyncio.gather(*tasks)
         print("[ToolChatCompletionScheduler] generate_sequences done")
 
-        batch_conversations = [[conversations] for conversations in batch_conversations]
-        return self._postprocess(batch, batch_conversations, n=1)
+        return self._postprocess(batch, batch_conversations, n=n)
 
 
 class CustomRLHFDataset(RLHFDataset):

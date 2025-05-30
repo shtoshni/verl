@@ -217,7 +217,7 @@ class ChatCompletionScheduler:
     async def generate_sequences(self, prompts: DataProto, **sampling_params) -> DataProto:
         raise NotImplementedError
 
-    def _postprocess(self, batch: DataProto, batch_conversations: List[List[List[Dict[str, str]]]], n: int) -> DataProto:
+    def _postprocess(self, batch: DataProto, batch_conversations: List[List[Dict[str, str]]], n: int) -> DataProto:
         # NOTE: consistent with batch version of generate_sequences in vllm_rollout_spmd.py
         # prompts: left pad
         # responses: right pad
@@ -227,10 +227,6 @@ class ChatCompletionScheduler:
 
         # prompts: [prompt] from input dataset
         prompts = [self.tokenizer.apply_chat_template(prompt, add_generation_prompt=True, tokenize=False) for prompt in batch.non_tensor_batch["raw_prompt"]]
-
-        # flatten batch_conversations if n > 1
-        assert len(batch_conversations) == len(prompts)
-        batch_conversations = [conversation for conversations in batch_conversations for conversation in conversations]
         assert len(batch_conversations) == len(prompts) * n
 
         # drop last turn if it's tool calling
