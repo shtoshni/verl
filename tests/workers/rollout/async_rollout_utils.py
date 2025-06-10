@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from typing import Union
 
 import ray
 from omegaconf import DictConfig
@@ -18,14 +19,15 @@ from omegaconf import DictConfig
 from verl.single_controller.ray import RayClassWithInitArgs, RayWorkerGroup
 from verl.single_controller.ray.base import create_colocated_worker_cls
 from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
-from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker
+from verl.workers.fsdp_workers import ActorRolloutRefWorker, AsyncActorRolloutRefWorker
 from verl.workers.rollout.async_server import AsyncLLMServerManager
 
 
-def init_async_rollout_manager(config: DictConfig) -> AsyncLLMServerManager:
+def init_async_rollout_manager(config: DictConfig) -> Union[AsyncLLMServerManager, RayWorkerGroup]:
     # =========================== 1. Create hybrid ActorRollout workers ===========================
+    actor_rollout_cls = AsyncActorRolloutRefWorker if config.actor_rollout_ref.rollout.mode == "async" else ActorRolloutRefWorker
     role_worker_mapping = {
-        Role.ActorRollout: ray.remote(AsyncActorRolloutRefWorker),
+        Role.ActorRollout: ray.remote(actor_rollout_cls),
     }
     global_pool_id = "global_pool"
     resource_pool_spec = {
@@ -51,6 +53,9 @@ def init_async_rollout_manager(config: DictConfig) -> AsyncLLMServerManager:
         all_wg.update(spawn_wg)
     actor_rollout_wg = all_wg["actor_rollout"]
     actor_rollout_wg.init_model()
+
+    if config.actor_rollout_ref.rollout.mode == "sync":
+        return actor_rollout_wg
 
     # =========================== 2. Create AsyncLLMServerManager  ===========================
     async_rollout_manager = AsyncLLMServerManager(

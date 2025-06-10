@@ -31,10 +31,11 @@ packages:
 - torch==2.6.0
 - vllm==0.8.5
 
-[DEBUG] backend: cgraph, n_gpus_per_node: 2, use_chat_scheduler: False, batch_size: 1024, step: 0, time: 44.13 secs
-[DEBUG] backend: external, n_gpus_per_node: 2, use_chat_scheduler: False, batch_size: 1024, step: 0, time: 45.05 secs
-[DEBUG] backend: external, n_gpus_per_node: 2, use_chat_scheduler: True, batch_size: 1024, step: 0, time: 43.38 secs
-[DEBUG] backend: external, n_gpus_per_node: 8, use_chat_scheduler: True, batch_size: 1024, step: 0, time: 16.40 secs
+[DEBUG] backend: sync, n_gpus_per_node: 2, use_chat_scheduler: False, batch_size: 1024, step: 0, step_time: 45.74 secs
+[DEBUG] backend: cgraph, n_gpus_per_node: 2, use_chat_scheduler: True, batch_size: 1024, step: 0, step time: 51.75 secs, wake_up_time: 0.00 secs, gen_time: 51.75 secs, sleep_time: 0.00 secs
+[DEBUG] backend: external, n_gpus_per_node: 2, use_chat_scheduler: True, batch_size: 1024, step: 0, step time: 50.94 secs, wake_up_time: 1.69 secs, gen_time: 48.60 secs, sleep_time: 0.65 secs
+[DEBUG] backend: external, n_gpus_per_node: 2, use_chat_scheduler: True, batch_size: 1024, step: 0, step time: 50.07 secs, wake_up_time: 1.23 secs, gen_time: 48.21 secs, sleep_time: 0.63 secs
+[DEBUG] backend: external, n_gpus_per_node: 8, use_chat_scheduler: True, batch_size: 1024, step: 0, step time: 20.35 secs, wake_up_time: 0.91 secs, gen_time: 18.48 secs, sleep_time: 0.96 secs
 """
 
 import asyncio
@@ -63,7 +64,7 @@ from verl.workers.rollout.vllm_rollout.vllm_async_server import AsyncvLLMServer
 def init_config(n_gpus_per_node) -> DictConfig:
     config = OmegaConf.load("verl/trainer/config/ppo_trainer.yaml")
     config.trainer.n_gpus_per_node = n_gpus_per_node
-    config.data.train_batch_size = 128
+    config.data.train_batch_size = 1024
     config.data.return_raw_chat = True
     config.actor_rollout_ref.model.path = "Qwen/Qwen2.5-7B-Instruct"
     config.actor_rollout_ref.rollout.mode = "async"
@@ -72,7 +73,7 @@ def init_config(n_gpus_per_node) -> DictConfig:
     config.actor_rollout_ref.rollout.multi_turn.format = "hermes"
     config.actor_rollout_ref.rollout.prompt_length = 4096
     config.actor_rollout_ref.rollout.response_length = 4096
-    config.actor_rollout_ref.rollout.n = 8
+    config.actor_rollout_ref.rollout.n = 1
 
     # test sleep/wake_up with fsdp offload
     config.actor_rollout_ref.actor.fsdp_config.param_offload = True
@@ -132,9 +133,14 @@ def initialize(config, backend) -> Tuple[Union[AsyncLLMServerManager, ray.actor.
     # STEP 1: init async llm server
     server, server_address = None, None
     if backend == "external":
-        server, server_address = async_llm_backend_external_ray_executor(config)
-    else:
+        server = init_async_rollout_manager(config)
+        server_address = server.server_addresses[0]
+        server.sleep()
+    elif backend == "cgraph":
         server, server_address = async_llm_backend_ray_compiled_graph(config)
+    elif backend == "sync":
+        server = init_async_rollout_manager(config)
+        server_address = None
     print(f"server_address: {server_address}")
 
     # STEP 2: create dataloader
@@ -169,6 +175,9 @@ async def perf_without_chat_scheduler(backend, n_gpus_per_node):
     for step, batch in enumerate(dataloader):
         batch: DataProto = DataProto.from_single_dict(batch)
         t_start = time.time()
+        if backend == "external":
+            server.wake_up()
+        t_gen_start = time.time()
         tasks = []
         for messages in batch.non_tensor_batch["raw_prompt"].repeat(config.actor_rollout_ref.rollout.n, axis=0):
             task = chat_completions(
@@ -181,8 +190,16 @@ async def perf_without_chat_scheduler(backend, n_gpus_per_node):
 
         completions = await asyncio.gather(*tasks)
         messages = [completion.choices[0].message.content for completion in completions]
+        t_gen_end = time.time()
+        if backend == "external":
+            server.sleep()
         t_end = time.time()
-        print(f"[DEBUG] backend: {backend}, n_gpus_per_node: {n_gpus_per_node}, use_chat_scheduler: False, batch_size: {len(messages)}, step: {step}, time: {t_end - t_start:.2f} secs")
+
+        wake_up_time = t_gen_start - t_start
+        gen_time = t_gen_end - t_gen_start
+        sleep_time = t_end - t_gen_end
+        step_time = t_end - t_start
+        print(f"[DEBUG] backend: {backend}, n_gpus_per_node: {n_gpus_per_node}, use_chat_scheduler: True, batch_size: {len(messages)}, step: {step}, step time: {step_time:.2f} secs, wake_up_time: {wake_up_time:.2f} secs, gen_time: {gen_time:.2f} secs, sleep_time: {sleep_time:.2f} secs")
         break
 
     ray.shutdown()
@@ -197,15 +214,48 @@ def perf_with_chat_scheduler(backend, n_gpus_per_node):
     for step, batch in enumerate(dataloader):
         batch: DataProto = DataProto.from_single_dict(batch)
         t_start = time.time()
+        server.wake_up()
+        t_gen_start = time.time()
         gen_batch = server.generate_sequences(batch)
+        t_gen_end = time.time()
+        server.sleep()
         t_end = time.time()
-        print(f"[DEBUG] backend: {backend}, n_gpus_per_node: {n_gpus_per_node}, use_chat_scheduler: True, batch_size: {len(gen_batch)}, step: {step}, time: {t_end - t_start:.2f} secs")
+
+        wake_up_time = t_gen_start - t_start
+        gen_time = t_gen_end - t_gen_start
+        sleep_time = t_end - t_gen_end
+        step_time = t_end - t_start
+        print(f"[DEBUG] backend: {backend}, n_gpus_per_node: {n_gpus_per_node}, use_chat_scheduler: True, batch_size: {len(gen_batch)}, step: {step}, step time: {step_time:.2f} secs, wake_up_time: {wake_up_time:.2f} secs, gen_time: {gen_time:.2f} secs, sleep_time: {sleep_time:.2f} secs")
+        break
+
+    ray.shutdown()
+
+
+def perf_sync_llm(backend, n_gpus_per_node):
+    """Perf test sync LLM."""
+    config = init_config(n_gpus_per_node)
+    config.actor_rollout_ref.rollout.mode = "sync"
+    actor_rollout_wg, server_address, dataloader = initialize(config, backend)
+
+    for step, batch in enumerate(dataloader):
+        batch: DataProto = DataProto.from_single_dict(batch)
+        batch = batch.pop(
+            batch_keys=["input_ids", "attention_mask", "position_ids"],
+            non_tensor_batch_keys=["raw_prompt_ids"],
+        )
+        t_start = time.time()
+        gen_batch = actor_rollout_wg.generate_sequences(batch)
+        t_end = time.time()
+        print(f"[DEBUG] backend: {backend}, n_gpus_per_node: {n_gpus_per_node}, use_chat_scheduler: False, batch_size: {len(gen_batch)}, step: {step}, step_time: {t_end - t_start:.2f} secs")
         break
 
     ray.shutdown()
 
 
 if __name__ == "__main__":
+    # Perf test sync LLM
+    perf_sync_llm(backend="sync", n_gpus_per_node=2)
+
     # Perf test AsyncLLM backend:
     # - cgraph: default RayDistributedExecutor with compiled graph
     # - external: ExternalRayDistributedExecutor with remote call
