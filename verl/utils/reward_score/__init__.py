@@ -14,6 +14,7 @@
 # from . import gsm8k, math, prime_math, prime_code
 
 from verl.utils.import_utils import deprecated
+import re
 
 
 def default_compute_score(data_source, solution_str, ground_truth, extra_info=None, sandbox_fusion_url=None, concurrent_semaphore=None):
@@ -36,6 +37,40 @@ def default_compute_score(data_source, solution_str, ground_truth, extra_info=No
         from . import gsm8k
 
         res = gsm8k.compute_score(solution_str, ground_truth)
+
+    elif data_source == "genselect_math":
+        
+        def extract_judgment(solution_str):
+            """Extract the judgment from the generation."""
+            pattern = r"Judgment:\s*\**(\d+)\**"
+            matches = re.findall(pattern, solution_str[-min(2000, len(solution_str)):], re.IGNORECASE)
+            
+            if matches:
+                number = matches[-1]
+                judgment = int(number)
+            else:
+                judgment = None
+
+            return judgment
+        
+
+        pred_judgement = extract_judgment(solution_str)
+        proc_ground_truth = {int(x) for x in ground_truth.split(",")}
+        if pred_judgement is None:
+            score = 0.0
+        else:
+            if pred_judgement in proc_ground_truth:
+                score = 1.0
+            else:
+                score = 0.0
+
+        res = {
+            "score": score,
+            "acc": score,
+            "pred": f"{pred_judgement}",
+        }
+
+        
     elif data_source in ["lighteval/MATH", "DigitalLearningGmbH/MATH-lighteval"]:
         from . import math
 
